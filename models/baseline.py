@@ -4,7 +4,8 @@ import re
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import SVC
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import classification_report
 from sklearn.model_selection import KFold
@@ -52,82 +53,96 @@ def test1():
     pd.options.mode.chained_assignment = None
     # =========================================================================
     data = pd.read_csv("../data/train.csv")
+    need_scaled = True
 
     # ------------------------- Pclass
-    data['Pclass_1'] = 0
-    data['Pclass_2'] = 0
-    data['Pclass_3'] = 0
-
-    data.Pclass_1[data.Pclass == 1] = 1
-    data.Pclass_2[data.Pclass == 2] = 1
-    data.Pclass_3[data.Pclass == 3] = 1
-    # data = data.drop('Pclass', axis=1)
+    # dummy coding
+    dummy_Pclass = pd.get_dummies(data.Pclass)
+    dummy_Pclass = dummy_Pclass.rename(columns=lambda col: 'Pclass_' + str(col))
+    data = pd.concat([data, dummy_Pclass], axis=1)
 
     # ------------------------- Name
-    data['TitleName'] = ''
-    pattern = re.compile(', (.*?)\.')
-    for i in range(data.shape[0]):
-        data['TitleName'].iloc[i] = pattern.findall(data.Name[i])[0]
-    # ['Mr' 'Mrs' 'Miss' 'Master' 'Don' 'Rev' 'Dr' 'Mme' 'Ms' 'Major' 'Lady'
-    #  'Sir' 'Mlle' 'Col' 'Capt' 'the Countess' 'Jonkheer']
 
-    title_list = list(data.TitleName.unique())
-    for title in title_list:
-        data[title] = 0
-        data[title][data.TitleName == title] = 1
+    pattern = re.compile(', (.*?)\.')
+    data['Title'] = data['Name'].map(lambda t: pattern.findall(t)[0])
+
+    # train.csv中包含的title
+    # ['Mr', 'Mrs', 'Miss', 'Master', 'Don', 'Rev', 'Dr', 'Mme', 'Ms',
+    #  'Major', 'Lady', 'Sir', 'Mlle', 'Col', 'Capt', 'the Countess',
+    #  'Jonkheer']
+
+    # test.csv中包含的title
+    # ['Mr', 'Mrs', 'Miss', 'Master', 'Ms', 'Col', 'Rev', 'Dr', 'Dona']
+
+    # 最终保留的title
+    # ['Mr', 'Mrs', 'Miss', 'Master', 'Sir', 'Rev', 'Dr', 'Lady']
+
+    # 这些称号有法语还有英语，需要依据当时的文化环境将其归类
+    data['Title'][data.Title == 'Jonkheer'] = 'Master'
+    data['Title'][data.Title.isin(['Ms', 'Mlle'])] = 'Miss'
+    data['Title'][data.Title == 'Mme'] = 'Mrs'
+    data['Title'][data.Title.isin(['Capt', 'Don', 'Major', 'Col', 'Sir'])] = 'Sir'
+    data['Title'][data.Title.isin(['Dona', 'Lady', 'the Countess'])] = 'Lady'
+
+    # factorize title
+    # data['Title_id'] = pd.factorize(data.Title)[0] + 1
+
+    # dummy coding title
+    dummy_title = pd.get_dummies(data.Title)
+    data = pd.concat([data, dummy_title], axis=1)
 
     # ------------------------- Sex
-    data.Sex = data.Sex.map({'male': 1, 'female': 0})
+    dummy_sex = pd.get_dummies(data.Sex)
+    data = pd.concat([data, dummy_sex], axis=1)
 
     # ------------------------- Age
-    data.Age = data.Age.fillna(data.Age.median())
+    # 使用中位数填充
+    # data.Age = data.Age.fillna(data.Age.median())
+
+    # 使用众数填充
+    data.Age = data.Age.fillna(data.Age.mode()[0])
 
     data['Child'] = 0
-    data.Child[data.Age < 16] = 1
+    data.Child[data.Age <= 16] = 1
 
-    data['Age_Pclass'] = data.Age * data.Pclass
-
-    # min_age, max_age = data.Age.min(), data.Age.max()
-    # data.Age = (data.Age - min_age) / (max_age - min_age)
-    data.Age = (data.Age - data.Age.mean()) / data.Age.std()
-
-    # ------------------------- Fare
-    # min_fare, max_fare = data.Fare.min(), data.Fare.max()
-    # data.Fare = (data.Fare - min_fare) / (max_fare - min_fare)
+    if need_scaled:
+        max_age = data.Age.max()
+        data.Age = (data.Age / max_age) * 2 - 1
 
     # ------------------------- SibSp & Parch
     data['Family'] = data.SibSp + data.Parch
     data.Family[data.Family >= 1] = 1
 
-    # ------------------------- Embarked
-    data.Embarked.fillna('S')
-    embarked_list = ['Embarked_C', 'Embarked_Q', 'Embarked_S']
-    data['Embarked_C'] = 0
-    data['Embarked_Q'] = 0
-    data['Embarked_S'] = 0
+    # ------------------------- Fare
+    if need_scaled:
+        max_fare = data.Fare.max()
+        data.Fare = (data.Fare / max_fare) * 2 - 1
 
-    data.Embarked_C[data.Embarked == 'C'] = 1
-    data.Embarked_Q[data.Embarked == 'Q'] = 1
-    data.Embarked_S[data.Embarked == 'S'] = 1
+    # ------------------------- Embarked
+    data.Embarked = data.Embarked.fillna(data.Embarked.mode()[0])
+    dummy_Embarked = pd.get_dummies(data.Embarked)
+    dummy_Embarked = dummy_Embarked.rename(columns=lambda t: 'Embarked_' + t)
+    data = pd.concat([data, dummy_Embarked], axis=1)
 
     # =========================================================================
     # evalute model
-    predictors = ['Pclass_1', 'Pclass_2', 'Pclass_3', 'Sex', 'Age',
-                  'Age_Pclass', 'Child', 'Family', 'SibSp', 'Parch',
-                  'Fare']
-    predictors.extend(title_list)
-    predictors.extend(embarked_list)
+    predictors = ['Pclass_1', 'Pclass_2', 'Pclass_3',
+                  'Age', 'SibSp', 'Parch', 'Fare',
+                  'Dr', 'Lady', 'Master', 'Miss', 'Mr',
+                  'Mrs', 'Rev', 'Sir', 'female', 'male',
+                  'Child', 'Family',
+                  'Embarked_C', 'Embarked_Q', 'Embarked_S']
 
     for predictor in predictors:
         print predictor
 
     x = data[predictors]
-    x.to_csv('x.csv')
+    # x.to_csv('x.csv')
     y = data.Survived
     n, m = data.shape[0], len(predictors)
 
     # clf = LinearRegression()
-    # clf = SVC(C=100)
+    # clf = SVC(C=10)
     # clf = GradientBoostingClassifier(learning_rate=0.1)
     clf = RandomForestClassifier(n_estimators=100)
 
@@ -169,10 +184,10 @@ def test1():
         coef = pd.DataFrame({'coef': c, 'feature': x.columns})
         print coef
 
-    persistence_data = data.copy(True)
-    idx = list(persistence_data.columns).index('Survived')
-    persistence_data.insert(idx, 'Predicted', y_pred)
-    persistence_data.to_csv('predict.csv')
+    # persistence_data = data.copy(True)
+    # idx = list(persistence_data.columns).index('Survived')
+    # persistence_data.insert(idx, 'Predicted', y_pred)
+    # persistence_data.to_csv('predict.csv')
 
     clf.fit(x, y)
     print 'Score:{}'.format(clf.score(x, y))
